@@ -1217,6 +1217,8 @@ export interface BatterySuggestion {
   discharge?: number;
   /** Planned site grid flow of the slot in W, positive means import. */
   grid?: number;
+  /** Forecast solar power of the slot in W. */
+  solar?: number;
   /** Suggestion differs from the current operating mode. */
   actionable?: boolean;
 }
@@ -1231,6 +1233,8 @@ export interface LoadpointSuggestion {
   discharge?: number;
   /** Planned site grid flow of the slot in W, positive means import. */
   grid?: number;
+  /** Forecast solar power of the slot in W. */
+  solar?: number;
   /** Suggestion differs from the current operating mode. */
   actionable?: boolean;
 }

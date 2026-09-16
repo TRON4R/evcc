@@ -144,6 +144,9 @@ func TestOptimizerGate(t *testing.T) {
 		// a grid-fed power below the maximum is applied as current
 		{api.ModeSmart, api.AlwaysChargeOff, types.Suggestion{Action: actionCharge, Charge: 2300, Grid: 1000}, false, func(h *api.MockCharger) { h.EXPECT().MaxCurrent(int64(10)) }},
 
+		// a battery-fed power (grid balanced, no solar) is a setpoint, not surplus
+		{api.ModeSmart, api.AlwaysChargeOff, types.Suggestion{Action: actionCharge, Charge: 2300}, false, func(h *api.MockCharger) { h.EXPECT().MaxCurrent(int64(10)) }},
+
 		// off and fast remain the user's decision
 		{api.ModeOff, api.AlwaysChargeOff, full, false, func(h *api.MockCharger) { h.EXPECT().Enable(false) }},
 		{api.ModeNow, api.AlwaysChargeOff, stop, false, func(h *api.MockCharger) { h.EXPECT().MaxCurrent(int64(maxA)) }},
@@ -186,7 +189,7 @@ func TestOptimizerSurplusRegime(t *testing.T) {
 	// a previous grid-fed slot left the pv timer elapsed
 	lp.pvTimer = elapsed
 
-	lp.setSuggestion(&types.Suggestion{Action: actionCharge, Charge: 2300})
+	lp.setSuggestion(&types.Suggestion{Action: actionCharge, Charge: 2300, Solar: 2300})
 
 	// surplus dip: the loadpoint steps down to min current while the disable
 	// timer runs instead of disabling right away
@@ -235,10 +238,11 @@ func TestOptimizerFlexibility(t *testing.T) {
 		s    types.Suggestion
 		want float64
 	}{
-		{types.Suggestion{Action: actionCharge, Charge: 3680, Grid: 1000}, 0}, // full power
-		{types.Suggestion{Action: actionCharge, Charge: 2300, Grid: 1000}, 0}, // grid-fed setpoint
-		{types.Suggestion{Action: actionCharge, Charge: 2300}, 2700},          // surplus regime, pv loop yields
-		{types.Suggestion{Action: actionStop}, 2700},                          // stop, pv loop yields
+		{types.Suggestion{Action: actionCharge, Charge: 3680, Grid: 1000}, 0},     // full power
+		{types.Suggestion{Action: actionCharge, Charge: 2300, Grid: 1000}, 0},     // grid-fed setpoint
+		{types.Suggestion{Action: actionCharge, Charge: 2300}, 0},                 // battery-fed setpoint
+		{types.Suggestion{Action: actionCharge, Charge: 2300, Solar: 2300}, 2700}, // surplus regime, pv loop yields
+		{types.Suggestion{Action: actionStop}, 2700},                              // stop, pv loop yields
 	} {
 		lp := NewLoadpoint(util.NewLogger("foo"), nil)
 		lp.mode = api.ModeSmart

@@ -455,6 +455,9 @@ components:
         grid:
           description: Planned site grid flow of the slot in W, positive means import.
           type: number
+        solar:
+          description: Forecast solar power of the slot in W.
+          type: number
         actionable:
           description: Suggestion differs from the current operating mode.
           type: boolean
@@ -1209,6 +1212,9 @@ components:
           type: number
         grid:
           description: Planned site grid flow of the slot in W, positive means import.
+          type: number
+        solar:
+          description: Forecast solar power of the slot in W.
           type: number
         actionable:
           description: Suggestion differs from the current operating mode.
