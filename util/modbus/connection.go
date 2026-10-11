@@ -149,17 +149,22 @@ func (c *Connection) ReadFIFOQueue(address uint16) (results []byte, err error) {
 	})
 }
 
+// maximum PDU size (253 bytes) minus the function code
+const maxRawDataLength = 252
+
 // ErrRawUnsupported is returned by SendRaw for connections other than Modbus TCP
 var ErrRawUnsupported = errors.New("raw requests require a modbus tcp connection")
 
-// SendRaw sends a request with an arbitrary, e.g. vendor specific, function code and returns
-// the response function code and data unchanged, including exception responses.
-// Only Modbus TCP is supported since RTU framing requires knowing the response length of a
-// function code in advance. Like writes, raw requests are not retried.
+// SendRaw sends a Modbus TCP PDU without retries.
+// Exception responses are returned unchanged.
 func (c *Connection) SendRaw(functionCode byte, data []byte) (byte, []byte, error) {
 	tcp, ok := c.Connection.(*meters.TCP)
 	if !ok {
 		return 0, nil, ErrRawUnsupported
+	}
+
+	if len(data) > maxRawDataLength {
+		return 0, nil, fmt.Errorf("raw request data exceeds %d bytes", maxRawDataLength)
 	}
 
 	var resFunctionCode byte

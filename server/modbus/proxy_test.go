@@ -2,9 +2,12 @@ package modbus
 
 import (
 	"encoding/binary"
+	"fmt"
+	"io"
 	"math/rand/v2"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,9 +147,9 @@ func TestRawFunctionCodes(t *testing.T) {
 	req := []byte{0x05, 0x01, 0x45}
 
 	t.Run("forwarded", func(t *testing.T) {
-		conn := rawClient(t, startRawProxy(t, &rawEchoHandler{RequestHandler: new(mbserver.DummyHandler)}, ReadOnlyFalse), 16)
+		addr, _ := startRawProxy(t, &rawEchoHandler{RequestHandler: new(mbserver.DummyHandler)}, ReadOnlyFalse)
 
-		fc, b, err := conn.SendRaw(0x41, req)
+		fc, b, err := rawClient(t, addr, 16).SendRaw(0x41, req)
 		require.NoError(t, err)
 		assert.Equal(t, byte(0x41), fc)
 		// downstream echoes unit id and request data
@@ -155,9 +158,9 @@ func TestRawFunctionCodes(t *testing.T) {
 
 	t.Run("exception passed through", func(t *testing.T) {
 		// Huawei permission denied
-		conn := rawClient(t, startRawProxy(t, &rawExceptionHandler{RequestHandler: new(mbserver.DummyHandler), code: 0x80}, ReadOnlyFalse), 16)
+		addr, _ := startRawProxy(t, &rawExceptionHandler{RequestHandler: new(mbserver.DummyHandler), code: 0x80}, ReadOnlyFalse)
 
-		fc, b, err := conn.SendRaw(0x41, req)
+		fc, b, err := rawClient(t, addr, 16).SendRaw(0x41, req)
 		require.NoError(t, err)
 		assert.Equal(t, byte(0xc1), fc)
 		assert.Equal(t, []byte{0x80}, b)
@@ -165,54 +168,107 @@ func TestRawFunctionCodes(t *testing.T) {
 
 	for _, mode := range []ReadOnlyMode{ReadOnlyTrue, ReadOnlyDeny} {
 		t.Run("rejected if read-only "+mode.String(), func(t *testing.T) {
-			conn := rawClient(t, startRawProxy(t, &rawEchoHandler{RequestHandler: new(mbserver.DummyHandler)}, mode), 16)
+			downstream := &rawEchoHandler{RequestHandler: new(mbserver.DummyHandler)}
+			addr, _ := startRawProxy(t, downstream, mode)
 
-			fc, b, err := conn.SendRaw(0x41, req)
+			fc, b, err := rawClient(t, addr, 16).SendRaw(0x41, req)
 			require.NoError(t, err)
 			assert.Equal(t, byte(0xc1), fc)
 			assert.Equal(t, []byte{0x01}, b) // illegal function
+			assert.Zero(t, downstream.calls.Load())
 		})
 	}
+
+	t.Run("rejected for non-tcp downstream", func(t *testing.T) {
+		// rtu framing over tcp
+		conn, err := modbus.NewConnection(t.Context(), "localhost:1", "", "", 0, modbus.Rtu, 1)
+		require.NoError(t, err)
+
+		fc, b, err := rawClient(t, startProxy(t, conn, ReadOnlyFalse), 16).SendRaw(0x41, req)
+		require.NoError(t, err)
+		assert.Equal(t, byte(0xc1), fc)
+		assert.Equal(t, []byte{0x01}, b) // illegal function
+	})
 }
 
-func TestRawConcurrentWithReads(t *testing.T) {
+func TestRawConcurrentClients(t *testing.T) {
 	// downstream answers raw requests and input register reads
-	addr := startRawProxy(t, &rawEchoHandler{
+	addr, downstream := startRawProxy(t, &rawEchoHandler{
 		RequestHandler: &echoHandler{RequestHandler: new(mbserver.DummyHandler)},
 	}, ReadOnlyFalse)
 
+	// independent proxy clients, each with its own tcp connection
+	clients := make([]net.Conn, 5)
+	for i := range clients {
+		conn, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		clients[i] = conn
+	}
+
+	start := make(chan struct{})
+
 	var wg sync.WaitGroup
 
-	for id := 1; id <= 10; id++ {
+	for i, conn := range clients {
+		// unit ids differ from the downstream connection's id 1
+		id := byte(i + 2)
+
 		wg.Go(func() {
-			conn := rawClient(t, addr, uint8(id))
+			<-start
 
-			for i := range 50 {
-				if i%2 == 0 {
+			for n := range 50 {
+				if n%2 == 0 {
 					// Huawei upload file frame: sub function 0x06, data length 3, file type, frame number
-					data := []byte{0x06, 0x03, 0x45, byte(id), byte(i)}
+					req := []byte{0x41, 0x06, 0x03, 0x45, 0x00, byte(n)}
 
-					fc, b, err := conn.SendRaw(0x41, data)
-					require.NoError(t, err)
-					assert.Equal(t, byte(0x41), fc)
-					assert.Equal(t, append([]byte{byte(id)}, data...), b)
+					res, err := rawRoundTrip(conn, uint16(n), id, req)
+					if !assert.NoError(t, err) {
+						return
+					}
+
+					// downstream echoes unit id and request data
+					assert.Equal(t, append([]byte{0x41, id}, req[1:]...), res)
 
 					continue
 				}
 
 				reg := uint16(rand.N(200) + 1)
 				qty := uint16(rand.N(32) + 1)
+				req := binary.BigEndian.AppendUint16(binary.BigEndian.AppendUint16([]byte{0x04}, reg), qty)
 
-				b, err := conn.ReadInputRegisters(reg, qty)
-				require.NoError(t, err)
+				res, err := rawRoundTrip(conn, uint16(n), id, req)
+				if !assert.NoError(t, err) || !assert.Len(t, res, 2+2*int(qty)) {
+					return
+				}
 
 				for u := range qty {
-					assert.Equal(t, reg^uint16(id)^u, binary.BigEndian.Uint16(b[2*u:]))
+					assert.Equal(t, reg^uint16(id)^u, binary.BigEndian.Uint16(res[2+2*u:]))
 				}
 			}
 		})
 	}
 
+	// evcc polling on the shared downstream connection
+	wg.Go(func() {
+		<-start
+
+		for range 50 {
+			reg := uint16(rand.N(200) + 1)
+			qty := uint16(rand.N(32) + 1)
+
+			b, err := downstream.ReadInputRegisters(reg, qty)
+			if !assert.NoError(t, err) || !assert.Len(t, b, 2*int(qty)) {
+				return
+			}
+
+			for u := range qty {
+				assert.Equal(t, reg^1^u, binary.BigEndian.Uint16(b[2*u:]))
+			}
+		}
+	})
+
+	close(start)
 	wg.Wait()
 }
 
@@ -225,12 +281,42 @@ func rawClient(t *testing.T, addr string, id uint8) *modbus.Connection {
 	return conn
 }
 
+// rawRoundTrip sends a request PDU over a plain Modbus TCP connection and returns the response PDU
+func rawRoundTrip(conn net.Conn, txn uint16, id uint8, req []byte) ([]byte, error) {
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return nil, err
+	}
+
+	// MBAP header: transaction id, protocol id, length, unit id
+	frame := binary.BigEndian.AppendUint16(nil, txn)
+	frame = binary.BigEndian.AppendUint16(frame, 0)
+	frame = binary.BigEndian.AppendUint16(frame, uint16(len(req)+1))
+	frame = append(append(frame, id), req...)
+
+	if _, err := conn.Write(frame); err != nil {
+		return nil, err
+	}
+
+	header := make([]byte, 7)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, err
+	}
+
+	if binary.BigEndian.Uint16(header) != txn || header[6] != id {
+		return nil, fmt.Errorf("unexpected response header % x", header)
+	}
+
+	res := make([]byte, int(binary.BigEndian.Uint16(header[4:]))-1)
+	_, err := io.ReadFull(conn, res)
+
+	return res, err
+}
+
 // startRawProxy starts a downstream server using the given handler and a proxy in front of it.
-// It returns the proxy address.
-func startRawProxy(t *testing.T, downstream mbserver.RequestHandler, readOnly ReadOnlyMode) string {
+// It returns the proxy address and the proxy's downstream connection.
+func startRawProxy(t *testing.T, downstream mbserver.RequestHandler, readOnly ReadOnlyMode) (string, *modbus.Connection) {
 	t.Helper()
 
-	// downstream server
 	l, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { l.Close() })
@@ -240,31 +326,39 @@ func startRawProxy(t *testing.T, downstream mbserver.RequestHandler, readOnly Re
 	require.NoError(t, srv.Start(l))
 	t.Cleanup(func() { _ = srv.Stop() })
 
-	// proxy server
-	pl, err := net.Listen("tcp", "localhost:0")
+	conn, err := modbus.NewConnection(t.Context(), l.Addr().String(), "", "", 0, modbus.Tcp, 1)
 	require.NoError(t, err)
-	t.Cleanup(func() { pl.Close() })
 
-	downstreamConn, err := modbus.NewConnection(t.Context(), l.Addr().String(), "", "", 0, modbus.Tcp, 1)
+	return startProxy(t, conn, readOnly), conn
+}
+
+// startProxy starts a proxy in front of the given downstream connection and returns its address
+func startProxy(t *testing.T, conn *modbus.Connection, readOnly ReadOnlyMode) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
+	t.Cleanup(func() { l.Close() })
 
 	proxy, err := mbserver.New(&handler{
 		log:      util.NewLogger("foo"),
 		readOnly: readOnly,
-		conn:     downstreamConn,
+		conn:     conn,
 	})
 	require.NoError(t, err)
-	require.NoError(t, proxy.Start(pl))
+	require.NoError(t, proxy.Start(l))
 	t.Cleanup(func() { _ = proxy.Stop() })
 
-	return pl.Addr().String()
+	return l.Addr().String()
 }
 
 type rawEchoHandler struct {
 	mbserver.RequestHandler
+	calls atomic.Int32
 }
 
 func (h *rawEchoHandler) HandleRaw(req *mbserver.RawRequest) (uint8, []byte, error) {
+	h.calls.Add(1)
 	return req.FunctionCode, append([]byte{req.UnitId}, req.Payload...), nil
 }
 

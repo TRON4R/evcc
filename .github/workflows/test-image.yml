@@ -8,6 +8,8 @@ on:
   push:
     branches:
       - "test/**"
+    tags-ignore:
+      - "**"
   workflow_dispatch:
 
 permissions:

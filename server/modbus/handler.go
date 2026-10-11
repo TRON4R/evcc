@@ -168,10 +168,9 @@ func (h *handler) HandleHoldingRegisters(req *mbserver.HoldingRegistersRequest) 
 
 var _ mbserver.RawRequestHandler = (*handler)(nil)
 
-// HandleRaw forwards requests with function codes not handled by mbserver itself,
-// e.g. Huawei's vendor specific 0x41 used for login and file transfer
+// HandleRaw forwards function codes not handled by mbserver
 func (h *handler) HandleRaw(req *mbserver.RawRequest) (uint8, []byte, error) {
-	// the effect of vendor specific function codes is unknown, they may write
+	// unknown function codes may write to the device
 	if h.readOnly != ReadOnlyFalse {
 		h.log.TRACE.Printf("deny: raw: id %d func %02x", req.UnitId, req.FunctionCode)
 		return 0, nil, mbserver.ErrIllegalFunction

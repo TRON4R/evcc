@@ -27,6 +27,8 @@ github.com/Shopify/toxiproxy v2.1.4+incompatible h1:TKdv8HiTLgE5wdJuEML90aBgNWso
 github.com/Shopify/toxiproxy v2.1.4+incompatible/go.mod h1:OXgGpZ6Cli1/URJOF1DMxUHB2q5Ap20/P/eIdh4G0pI=
 github.com/TRON4R/mbserver v0.0.0-20261011121159-ff559fea90e3 h1:eQrhQC363W0MpMho4W87PCOQUvLawoJ4kJquhMJVlE0=
 github.com/TRON4R/mbserver v0.0.0-20261011121159-ff559fea90e3/go.mod h1:4VtYzTm//oUipwvO3yh0g/udTE7pYJM+U/kyAuFDsgM=
+github.com/TRON4R/mbserver v0.0.0-20261011170445-6d489026df63 h1:DNo9keinURYSEJdoNUe3YsTrUq8V2iV3cEmPCqABCQM=
+github.com/TRON4R/mbserver v0.0.0-20261011170445-6d489026df63/go.mod h1:4VtYzTm//oUipwvO3yh0g/udTE7pYJM+U/kyAuFDsgM=
 github.com/WulfgarW/sensonet v0.0.8 h1:CkKzQuGTmZiYQPOI7t9tYCynM0mVnl1UNWyiSY5a3cE=
 github.com/WulfgarW/sensonet v0.0.8/go.mod h1:uId+Lbatrz6CsUMXfj+zsRPdT5KHrh3H8YOk0xZU/9E=
 github.com/andig/eebus-go v0.0.0-20260930172701-f8d6395986ba h1:LtCcwFaVDGkkqbrXOaT1TfKg13Js0emrR47cctt5LBk=
