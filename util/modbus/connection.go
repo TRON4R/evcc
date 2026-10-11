@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	gridx "github.com/grid-x/modbus"
 	"github.com/volkszaehler/mbmd/meters"
 )
 
@@ -146,4 +147,47 @@ func (c *Connection) ReadFIFOQueue(address uint16) (results []byte, err error) {
 	return c.read(func() ([]byte, error) {
 		return c.ModbusClient().ReadFIFOQueue(address)
 	})
+}
+
+// ErrRawUnsupported is returned by SendRaw for connections other than Modbus TCP
+var ErrRawUnsupported = errors.New("raw requests require a modbus tcp connection")
+
+// SendRaw sends a request with an arbitrary, e.g. vendor specific, function code and returns
+// the response function code and data unchanged, including exception responses.
+// Only Modbus TCP is supported since RTU framing requires knowing the response length of a
+// function code in advance. Like writes, raw requests are not retried.
+func (c *Connection) SendRaw(functionCode byte, data []byte) (byte, []byte, error) {
+	tcp, ok := c.Connection.(*meters.TCP)
+	if !ok {
+		return 0, nil, ErrRawUnsupported
+	}
+
+	var resFunctionCode byte
+
+	b, err := c.exec(func() ([]byte, error) {
+		req, err := tcp.Handler.Encode(&gridx.ProtocolDataUnit{FunctionCode: functionCode, Data: data})
+		if err != nil {
+			return nil, err
+		}
+
+		res, err := tcp.Handler.Send(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := tcp.Handler.Verify(req, res); err != nil {
+			return nil, err
+		}
+
+		pdu, err := tcp.Handler.Decode(res)
+		if err != nil {
+			return nil, err
+		}
+
+		resFunctionCode = pdu.FunctionCode
+
+		return pdu.Data, nil
+	})
+
+	return resFunctionCode, b, err
 }
