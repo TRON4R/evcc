@@ -40,11 +40,22 @@ func NewProvider(api *API, vin, pin string, expiry, cache time.Duration) *Provid
 
 	// use pin for refreshing
 	if pin != "" {
-		impl.statusG = util.Cached(func() (StatusResponse, error) {
+		statusC := util.ResettableCached(func() (StatusResponse, error) {
 			return impl.status(
 				func() (StatusResponse, error) { return api.Status(vin) },
 			)
 		}, cache)
+
+		impl.statusG = func() (StatusResponse, error) {
+			res, err := statusC.Get()
+
+			// re-read without pin until the vehicle reports being plugged in
+			if err == nil && res.EvInfo != nil && !res.EvInfo.Battery.PlugInStatus {
+				statusC.Reset()
+			}
+
+			return res, err
+		}
 	}
 
 	return impl
