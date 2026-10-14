@@ -275,3 +275,71 @@ func TestControllerUnplugged(t *testing.T) {
 	require.NotEmpty(t, paths)
 	assert.True(t, strings.HasSuffix(paths[len(paths)-1], "/ev/chargenow"))
 }
+
+func statusJSON(age time.Duration, pluggedIn bool, charging string) string {
+	return fmt.Sprintf(`{"timestamp":%d,"evInfo":{"battery":{"plugInStatus":%t,"chargingStatus":%q,"stateOfCharge":71}}}`,
+		time.Now().Add(-age).UnixMilli(), pluggedIn, charging)
+}
+
+func TestStatusCache(t *testing.T) {
+	var status string
+	var statusCalls, otherCalls int
+
+	fiat := testAPI(func(req *http.Request) *http.Response {
+		if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/status") {
+			statusCalls++
+			return httpResponse(req, http.StatusOK, status)
+		}
+		otherCalls++
+		return httpResponse(req, http.StatusInternalServerError, "")
+	})
+
+	v := NewProvider(fiat, "vin", "1234", 5*time.Minute, 15*time.Minute)
+
+	// not plugged in: status is re-read without pin on every call
+	status = statusJSON(time.Hour, false, "NOT_CHARGING")
+	for i := 1; i <= 2; i++ {
+		res, err := v.Status()
+		require.NoError(t, err)
+		assert.Equal(t, api.StatusA, res)
+		assert.Equal(t, i, statusCalls)
+	}
+
+	// plugged in: fresh status is cached again
+	status = statusJSON(0, true, "CHARGING")
+	for range 2 {
+		res, err := v.Status()
+		require.NoError(t, err)
+		assert.Equal(t, api.StatusC, res)
+		assert.Equal(t, 3, statusCalls)
+	}
+
+	assert.Zero(t, otherCalls, "pin or deep refresh requests")
+}
+
+func TestStatusRejectedRefreshCached(t *testing.T) {
+	var deepRefreshCalls int
+
+	fiat := testAPI(func(req *http.Request) *http.Response {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return httpResponse(req, http.StatusOK, statusJSON(time.Hour, true, "CHARGING"))
+		case strings.HasSuffix(req.URL.Path, "/ignite/pin/authenticate"):
+			return httpResponse(req, http.StatusOK, `{"token":"token"}`)
+		default:
+			deepRefreshCalls++
+			return httpResponse(req, http.StatusForbidden, fmt.Sprintf(`{"name":"FORBIDDEN","message":"Forbidden","debugMsg":%q}`, notPluggedIn))
+		}
+	})
+
+	v := NewProvider(fiat, "vin", "1234", 5*time.Minute, 15*time.Minute)
+
+	// rejected deep refresh is not retried on every call
+	for range 2 {
+		res, err := v.Status()
+		require.NoError(t, err)
+		assert.Equal(t, api.StatusA, res)
+	}
+
+	assert.Equal(t, 1, deepRefreshCalls)
+}
